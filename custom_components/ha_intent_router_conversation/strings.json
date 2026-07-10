@@ -1,0 +1,26 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up HA Intent Router",
+        "description": "Enter the base URL of your ha-intent-router service and an API key minted from its Settings → Authentication → API Keys panel.",
+        "data": {
+          "base_url": "Base URL",
+          "api_key": "API Key"
+        },
+        "data_description": {
+          "base_url": "The root URL of your ha-intent-router service, e.g. http://ha-intent-router.local:8000",
+          "api_key": "An API key created in ha-intent-router's Settings → Authentication panel"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect. Verify the Base URL and confirm the service is running.",
+      "invalid_auth": "Authentication failed. Check your API key.",
+      "unknown": "Unexpected error — check the Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "HA Intent Router is already configured."
+    }
+  }
+}
