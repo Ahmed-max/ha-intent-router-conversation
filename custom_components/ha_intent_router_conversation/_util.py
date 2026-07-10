@@ -1,6 +1,8 @@
 """Pure utility functions with no HA dependencies — easy to unit-test."""
 from __future__ import annotations
 
+import json
+
 
 def build_query_payload(
     utterance: str,
@@ -33,6 +35,29 @@ def parse_response_text(data: dict) -> str:
     so callers always get a str.
     """
     return data.get("response", "")
+
+
+def parse_sse_data_line(line: str) -> dict | None:
+    """Parse one line of an SSE stream, returning the decoded JSON payload.
+
+    ha-intent-router's /query/stream emits events as "data: {json}\\n\\n" with no
+    "event:" line — the event type is a "type" key inside the JSON payload itself.
+    Returns None for blank lines, non-"data:" lines, or a payload that isn't valid
+    JSON/isn't a JSON object, so callers can skip them without special-casing.
+    """
+    line = line.strip()
+    if not line.startswith("data:"):
+        return None
+    payload = line[len("data:"):].strip()
+    if not payload:
+        return None
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
 
 
 def resolve_area(

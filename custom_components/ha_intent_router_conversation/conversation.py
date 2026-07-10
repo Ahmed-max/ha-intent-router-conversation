@@ -14,7 +14,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_API_KEY, CONF_BASE_URL, DOMAIN
-from ._util import build_query_payload, parse_response_text, resolve_area
+from ._util import (
+    build_query_payload,
+    parse_response_text,
+    parse_sse_data_line,
+    resolve_area,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,15 +80,53 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
         api_key: str = self._config[CONF_API_KEY]
         session = async_get_clientsession(self.hass)
 
+        full_response = ""
+        stream_error: str | None = None
+
         try:
             async with session.post(
-                f"{base_url}/query",
+                f"{base_url}/query/stream",
                 json=payload,
                 headers={"Authorization": f"Bearer {api_key}"},
                 timeout=_REQUEST_TIMEOUT,
             ) as resp:
                 resp.raise_for_status()
-                data = await resp.json()
+
+                async def _delta_stream():
+                    """Yield AssistantContentDeltaDict items for each SSE "token" event.
+
+                    "stage" events are logged at debug and never yielded/spoken.
+                    "done" captures the router's full response text as the
+                    source of truth (covers both the chat and non-chat done
+                    shapes, which both carry a "response" key). "error" stops
+                    the stream; the outer handler checks stream_error after
+                    the async-for completes.
+                    """
+                    nonlocal full_response, stream_error
+                    async for raw_line in resp.content:
+                        event = parse_sse_data_line(raw_line.decode("utf-8"))
+                        if event is None:
+                            continue
+                        event_type = event.get("type")
+                        if event_type == "token":
+                            text = event.get("text", "")
+                            if text:
+                                full_response += text
+                                yield {"role": "assistant", "content": text}
+                        elif event_type == "done":
+                            full_response = parse_response_text(event) or full_response
+                        elif event_type == "error":
+                            stream_error = event.get("message") or "Unknown stream error"
+                            return
+                        elif event_type == "stage":
+                            _LOGGER.debug("ha-intent-router stage event: %s", event)
+
+                # async_add_delta_content_stream is itself an async generator in
+                # HA — must be consumed with "async for", not awaited.
+                async for _ in chat_log.async_add_delta_content_stream(
+                    user_input.agent_id, _delta_stream()
+                ):
+                    pass
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             _LOGGER.error("Error communicating with ha-intent-router: %s", err)
             return _error_result(
@@ -94,23 +137,15 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
             _LOGGER.exception("Unexpected error from ha-intent-router: %s", err)
             return _error_result(user_input, "An unexpected error occurred.")
 
-        reply_text = parse_response_text(data)
-
-        try:
-            # async_add_assistant_content_without_tools is a synchronous @callback
-            # in HA — no await, no async for.
-            chat_log.async_add_assistant_content_without_tools(
-                conversation.AssistantContent(
-                    agent_id=user_input.agent_id,
-                    content=reply_text,
-                )
+        if stream_error:
+            _LOGGER.error("ha-intent-router stream error: %s", stream_error)
+            return _error_result(
+                user_input,
+                "Unable to reach the intent router. Please check your connection.",
             )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.exception("Error adding assistant content to chat log: %s", err)
-            return _error_result(user_input, "An unexpected error occurred.")
 
         response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(reply_text)
+        response.async_set_speech(full_response)
         return conversation.ConversationResult(
             response=response,
             conversation_id=user_input.conversation_id,

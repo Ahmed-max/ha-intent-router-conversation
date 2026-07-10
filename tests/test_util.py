@@ -6,6 +6,7 @@ import pytest
 from custom_components.ha_intent_router_conversation._util import (
     build_query_payload,
     parse_response_text,
+    parse_sse_data_line,
     resolve_area,
 )
 
@@ -169,3 +170,78 @@ def test_resolve_area_full_resolution():
     assert area_name == "Living Room"
     dev_reg.async_get.assert_called_once_with("device_satellite_lr")
     area_reg.async_get_area.assert_called_once_with("area_living_room")
+
+
+# ---------------------------------------------------------------------------
+# parse_sse_data_line
+# ---------------------------------------------------------------------------
+
+def test_parse_sse_data_line_token_event():
+    line = 'data: {"type": "token", "text": "Turning on "}\n'
+    result = parse_sse_data_line(line)
+    assert result == {"type": "token", "text": "Turning on "}
+
+
+def test_parse_sse_data_line_stage_event():
+    line = 'data: {"type": "stage", "stage": "dispatching"}\n'
+    result = parse_sse_data_line(line)
+    assert result == {"type": "stage", "stage": "dispatching"}
+
+
+def test_parse_sse_data_line_done_event_non_chat_shape():
+    line = (
+        'data: {"type": "done", "intent_type": "CONTROL", "response": "Done!", '
+        '"entity_ids": ["light.bedroom"], "confidence": 1.0, "latency_ms": 240}\n'
+    )
+    result = parse_sse_data_line(line)
+    assert result["type"] == "done"
+    assert result["response"] == "Done!"
+    assert result["entity_ids"] == ["light.bedroom"]
+
+
+def test_parse_sse_data_line_done_event_chat_shape():
+    """Chat path's done event only has intent_type + response — no KeyError parsing it."""
+    line = 'data: {"type": "done", "intent_type": "chat", "response": "Hello!"}\n'
+    result = parse_sse_data_line(line)
+    assert result["type"] == "done"
+    assert result["response"] == "Hello!"
+    assert "entity_ids" not in result
+
+
+def test_parse_sse_data_line_error_event():
+    line = 'data: {"type": "error", "message": "Pipeline error"}\n'
+    result = parse_sse_data_line(line)
+    assert result == {"type": "error", "message": "Pipeline error"}
+
+
+def test_parse_sse_data_line_blank_line_is_none():
+    """SSE events are terminated by a blank line — must not raise or misparse."""
+    assert parse_sse_data_line("\n") is None
+    assert parse_sse_data_line("") is None
+    assert parse_sse_data_line("   \n") is None
+
+
+def test_parse_sse_data_line_non_data_line_is_none():
+    assert parse_sse_data_line("event: message\n") is None
+    assert parse_sse_data_line(": comment\n") is None
+
+
+def test_parse_sse_data_line_malformed_json_is_none():
+    assert parse_sse_data_line("data: {not valid json\n") is None
+
+
+def test_parse_sse_data_line_non_object_json_is_none():
+    """A bare JSON array/string/number is not a valid event payload."""
+    assert parse_sse_data_line('data: ["not", "an", "object"]\n') is None
+    assert parse_sse_data_line("data: 42\n") is None
+
+
+def test_parse_sse_data_line_empty_data_payload_is_none():
+    assert parse_sse_data_line("data:\n") is None
+    assert parse_sse_data_line("data: \n") is None
+
+
+def test_parse_sse_data_line_strips_surrounding_whitespace():
+    line = '  data: {"type": "token", "text": "hi"}  \n'
+    result = parse_sse_data_line(line)
+    assert result == {"type": "token", "text": "hi"}
