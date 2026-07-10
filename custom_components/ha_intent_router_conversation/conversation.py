@@ -24,6 +24,22 @@ from ._util import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _map_error_code(code: str | None) -> intent.IntentResponseErrorCode:
+    """Map the router's error_code string to a real HA error code.
+
+    Falls back to FAILED_TO_HANDLE for None or any unrecognized value, so a
+    future router-side addition to the vocabulary doesn't crash this
+    integration — it just degrades to the previous generic behavior.
+    """
+    if code is None:
+        return intent.IntentResponseErrorCode.FAILED_TO_HANDLE
+    try:
+        return intent.IntentResponseErrorCode(code)
+    except ValueError:
+        return intent.IntentResponseErrorCode.FAILED_TO_HANDLE
+
+
 # No total cap — a long streamed completion legitimately takes longer than any
 # fixed total to finish generating. connect/sock_connect bound connection setup;
 # sock_read is a per-chunk idle timeout that resets on every byte received, so it
@@ -107,6 +123,8 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
 
         full_response = ""
         stream_error: str | None = None
+        stream_error_code: str | None = None
+        done_error_code: str | None = None
 
         try:
             async with session.post(
@@ -123,11 +141,15 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                     "stage" events are logged at debug and never yielded/spoken.
                     "done" captures the router's full response text as the
                     source of truth (covers both the chat and non-chat done
-                    shapes, which both carry a "response" key). "error" stops
-                    the stream; the outer handler checks stream_error after
-                    the async-for completes.
+                    shapes, which both carry a "response" key), plus its
+                    optional "error_code" for soft semantic failures (e.g.
+                    no_intent_match) — absent on an older router or on the
+                    CHAT path, which never carries error_code by design.
+                    "error" stops the stream and carries its own "code";
+                    the outer handler checks stream_error after the
+                    async-for completes.
                     """
-                    nonlocal full_response, stream_error
+                    nonlocal full_response, stream_error, stream_error_code, done_error_code
                     async for raw_line in resp.content:
                         event = parse_sse_data_line(raw_line.decode("utf-8"))
                         if event is None:
@@ -140,8 +162,10 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                                 yield {"role": "assistant", "content": text}
                         elif event_type == "done":
                             full_response = parse_response_text(event) or full_response
+                            done_error_code = event.get("error_code")
                         elif event_type == "error":
                             stream_error = event.get("message") or "Unknown stream error"
+                            stream_error_code = event.get("code")
                             return
                         elif event_type == "stage":
                             _LOGGER.debug("ha-intent-router stage event: %s", event)
@@ -167,6 +191,17 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
             return _error_result(
                 user_input,
                 "Unable to reach the intent router. Please check your connection.",
+                error_code=_map_error_code(stream_error_code),
+            )
+
+        if done_error_code:
+            _LOGGER.debug("ha-intent-router soft failure: %s", done_error_code)
+            response = intent.IntentResponse(language=user_input.language)
+            response.async_set_error(_map_error_code(done_error_code), full_response)
+            return conversation.ConversationResult(
+                response=response,
+                conversation_id=user_input.conversation_id,
+                continue_conversation=False,
             )
 
         response = intent.IntentResponse(language=user_input.language)
@@ -181,10 +216,11 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
 def _error_result(
     user_input: conversation.ConversationInput,
     message: str,
+    error_code: intent.IntentResponseErrorCode = intent.IntentResponseErrorCode.FAILED_TO_HANDLE,
 ) -> conversation.ConversationResult:
     response = intent.IntentResponse(language=user_input.language)
     response.async_set_error(
-        intent.IntentResponseErrorCode.FAILED_TO_HANDLE,
+        error_code,
         message,
     )
     return conversation.ConversationResult(
