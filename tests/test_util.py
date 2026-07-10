@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from custom_components.ha_intent_router_conversation._util import (
+    _LOCAL_INTENTS,
+    _reject_non_local_intent,
     build_query_payload,
     parse_response_text,
     parse_sse_data_line,
@@ -245,3 +247,67 @@ def test_parse_sse_data_line_strips_surrounding_whitespace():
     line = '  data: {"type": "token", "text": "hi"}  \n'
     result = parse_sse_data_line(line)
     assert result == {"type": "token", "text": "hi"}
+
+
+# ---------------------------------------------------------------------------
+# _reject_non_local_intent
+# ---------------------------------------------------------------------------
+
+def _fake_result(intent_name: str):
+    """Minimal stand-in for a hassil RecognizeResult — only .intent.name is used."""
+    result = MagicMock()
+    result.intent.name = intent_name
+    return result
+
+
+def test_local_intents_allowlist_matches_confirmed_set():
+    """Exact 17-string allowlist, verified against real HA source (timer + media_player)."""
+    assert _LOCAL_INTENTS == {
+        "HassStartTimer",
+        "HassCancelTimer",
+        "HassCancelAllTimers",
+        "HassIncreaseTimer",
+        "HassDecreaseTimer",
+        "HassPauseTimer",
+        "HassUnpauseTimer",
+        "HassTimerStatus",
+        "HassMediaPause",
+        "HassMediaUnpause",
+        "HassMediaNext",
+        "HassMediaPrevious",
+        "HassMediaPlayerMute",
+        "HassMediaPlayerUnmute",
+        "HassSetVolume",
+        "HassSetVolumeRelative",
+        "HassMediaSearchAndPlay",
+    }
+    assert len(_LOCAL_INTENTS) == 17
+
+
+@pytest.mark.parametrize("intent_name", sorted(_LOCAL_INTENTS))
+def test_reject_non_local_intent_allows_every_allowlisted_intent(intent_name):
+    """async_handle_intents polarity: False = allow this match to execute natively."""
+    assert _reject_non_local_intent(_fake_result(intent_name)) is False
+
+
+@pytest.mark.parametrize(
+    "intent_name",
+    [
+        "HassTurnOn",
+        "HassTurnOff",
+        "HassToggle",
+        "HassSetPosition",
+        "HassStopMoving",
+        "HassGetState",
+        "HassNevermind",
+        "HassGetCurrentDate",
+        "HassGetCurrentTime",
+        "HassRespond",
+        "HassBroadcast",
+        "HassClimateGetTemperature",
+        "SomeUnknownFutureIntent",
+    ],
+)
+def test_reject_non_local_intent_rejects_everything_else(intent_name):
+    """async_handle_intents polarity: True = reject this match, fall through to router."""
+    assert _reject_non_local_intent(_fake_result(intent_name)) is True

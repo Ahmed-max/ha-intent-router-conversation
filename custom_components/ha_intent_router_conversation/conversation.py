@@ -15,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_API_KEY, CONF_BASE_URL, DOMAIN
 from ._util import (
+    _reject_non_local_intent,
     build_query_payload,
     parse_response_text,
     parse_sse_data_line,
@@ -73,6 +74,21 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
+        # Let HA's native intent system handle timers and media-transport first.
+        # _reject_non_local_intent returns True (reject) for everything outside the
+        # allowlist, so only those 17 intents ever execute here; everything else
+        # falls through (local_response is None) and continues to the router below.
+        local_response = await conversation.async_handle_intents(
+            self.hass, user_input, chat_log,
+            intent_filter=_reject_non_local_intent,
+        )
+        if local_response is not None:
+            return conversation.ConversationResult(
+                response=local_response,
+                conversation_id=user_input.conversation_id,
+                continue_conversation=False,
+            )
+
         dev_reg = dr.async_get(self.hass)
         area_reg = ar.async_get(self.hass)
         area_id, area_name = resolve_area(user_input.device_id, dev_reg, area_reg)
