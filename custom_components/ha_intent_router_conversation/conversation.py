@@ -23,7 +23,16 @@ from ._util import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
+# No total cap — a long streamed completion legitimately takes longer than any
+# fixed total to finish generating. connect/sock_connect bound connection setup;
+# sock_read is a per-chunk idle timeout that resets on every byte received, so it
+# only fires on a genuine stall, not on total stream duration.
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(
+    total=None,
+    connect=10,
+    sock_connect=10,
+    sock_read=30,
+)
 
 
 async def async_setup_entry(
