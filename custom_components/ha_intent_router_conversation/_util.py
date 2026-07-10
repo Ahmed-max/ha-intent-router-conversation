@@ -3,6 +3,41 @@ from __future__ import annotations
 
 import json
 
+# Timer intents: homeassistant/helpers/intent.py (INTENT_START_TIMER et al.)
+# Media transport intents: homeassistant/components/media_player/const.py
+# (INTENT_MEDIA_PAUSE et al.)
+# Keep these as literal strings — the HA constants map 1:1 and this avoids
+# an import-time HA dependency in test and production alike.
+_LOCAL_INTENTS: frozenset[str] = frozenset({
+    "HassStartTimer",
+    "HassCancelTimer",
+    "HassCancelAllTimers",
+    "HassIncreaseTimer",
+    "HassDecreaseTimer",
+    "HassPauseTimer",
+    "HassUnpauseTimer",
+    "HassTimerStatus",
+    "HassMediaPause",
+    "HassMediaUnpause",
+    "HassMediaNext",
+    "HassMediaPrevious",
+    "HassMediaPlayerMute",
+    "HassMediaPlayerUnmute",
+    "HassSetVolume",
+    "HassSetVolumeRelative",
+    "HassMediaSearchAndPlay",
+})
+
+
+def _reject_non_local_intent(result) -> bool:
+    """Return True to reject (exclude) intents that should fall through to the router.
+
+    async_handle_intents uses an exclude-filter polarity: True = no match (reject),
+    False = proceed with native HA execution (accept). We only allow the timer and
+    media-transport intents listed in _LOCAL_INTENTS to execute natively.
+    """
+    return result.intent.name not in _LOCAL_INTENTS
+
 
 def build_query_payload(
     utterance: str,
