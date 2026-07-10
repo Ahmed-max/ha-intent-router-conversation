@@ -5,11 +5,11 @@ import logging
 
 import aiohttp
 
-from homeassistant.components import conversation, intent
+from homeassistant.components import conversation
 from homeassistant.components.conversation import MATCH_ALL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar, device_registry as dr
+from homeassistant.helpers import area_registry as ar, device_registry as dr, intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
