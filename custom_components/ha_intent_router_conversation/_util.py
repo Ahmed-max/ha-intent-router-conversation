@@ -1,0 +1,56 @@
+"""Pure utility functions with no HA dependencies — easy to unit-test."""
+from __future__ import annotations
+
+
+def build_query_payload(
+    utterance: str,
+    conversation_id: str | None,
+    device_id: str | None,
+    area_id: str | None,
+    area_name: str | None,
+) -> dict:
+    """Build the JSON payload for POST /query.
+
+    medium/source follows the router's convention: "voice" for satellite-originated
+    requests (device_id is set), "text" for everything else.
+    """
+    medium = "voice" if device_id is not None else "text"
+    return {
+        "utterance": utterance,
+        "session_id": conversation_id,
+        "source": medium,
+        "medium": medium,
+        "satellite_id": device_id,
+        "satellite_area_id": area_id,
+        "satellite_area_name": area_name,
+    }
+
+
+def parse_response_text(data: dict) -> str:
+    """Extract the spoken reply from a QueryResponse dict.
+
+    The router returns {"response": "<text>", ...}; fall back to empty string
+    so callers always get a str.
+    """
+    return data.get("response", "")
+
+
+def resolve_area(
+    device_id: str | None,
+    dev_reg,
+    area_reg,
+) -> tuple[str | None, str | None]:
+    """Return (area_id, area_name) for the HA device that originated the request.
+
+    Both registries are passed in so this function has no HA imports and is easy
+    to unit-test with plain MagicMock objects.
+    """
+    if not device_id:
+        return None, None
+    device = dev_reg.async_get(device_id)
+    if device is None or device.area_id is None:
+        return None, None
+    area = area_reg.async_get_area(device.area_id)
+    if area is None:
+        return device.area_id, None
+    return area.id, area.name
