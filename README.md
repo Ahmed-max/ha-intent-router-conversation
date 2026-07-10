@@ -17,24 +17,37 @@ and response generation instead of the built-in conversation agent.
 - A running [ha-intent-router](https://github.com/maxrouter/ha-intent-router) instance
 - An API key created in ha-intent-router's **Settings → Authentication → API Keys** panel
 
-## Installation via HACS
+## Installation
 
-1. In HACS, go to **Integrations** → **⋮** → **Custom repositories**.
-2. Add `https://github.com/maxrouter/ha-intent-router-conversation` as an
-   **Integration** repository.
-3. Search for **HA Intent Router** in HACS and install it.
-4. Restart Home Assistant.
+This component is distributed as source — copy it manually into your HA config directory.
+
+1. Clone (or download) this repository:
+   ```bash
+   git clone ssh://git@192.168.178.130/max/ha-intent-router-conversation.git
+   ```
+2. Copy the component directory into your HA configuration:
+   ```bash
+   cp -r ha-intent-router-conversation/custom_components/ha_intent_router_conversation \
+         <your HA config dir>/custom_components/
+   ```
+   Your config directory is the folder that contains `configuration.yaml`.
+3. Restart Home Assistant.
 
 ## Configuration
 
-1. Go to **Settings → Devices & Services → Add Integration**.
-2. Search for **HA Intent Router** and select it.
-3. Enter:
+Once HA has restarted with the component in place, add the integration:
+
+1. Go to **Settings → Devices & Services → Add Integration**, search for
+   **HA Intent Router**, and select it. Or use the badge below to jump there directly:
+
+   [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=ha_intent_router_conversation)
+
+2. Enter:
    - **Base URL** — the root URL of your ha-intent-router service,
      e.g. `http://ha-intent-router.local:8000`
    - **API Key** — a key minted from ha-intent-router's
      **Settings → Authentication → API Keys** panel
-4. Click **Submit**. HA will test connectivity to `/health` before saving.
+3. Click **Submit**. HA will verify connectivity to `/health` before saving.
 
 ## Using as the default Assist agent
 
