@@ -33,6 +33,7 @@ async def async_setup_entry(
 class HAIntentRouterConversationEntity(conversation.ConversationEntity):
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_supported_features = conversation.ConversationEntityFeature.CONTROL
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         self.hass = hass
@@ -95,12 +96,18 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
 
         reply_text = parse_response_text(data)
 
-        await chat_log.async_add_assistant_content_without_tools(
-            conversation.AssistantContent(
-                agent_id=user_input.agent_id,
-                content=reply_text,
+        try:
+            # async_add_assistant_content_without_tools is a synchronous @callback
+            # in HA — no await, no async for.
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(
+                    agent_id=user_input.agent_id,
+                    content=reply_text,
+                )
             )
-        )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Error adding assistant content to chat log: %s", err)
+            return _error_result(user_input, "An unexpected error occurred.")
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(reply_text)
