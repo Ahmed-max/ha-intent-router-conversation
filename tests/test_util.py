@@ -261,7 +261,7 @@ def _fake_result(intent_name: str):
 
 
 def test_local_intents_allowlist_matches_confirmed_set():
-    """Exact 17-string allowlist, verified against real HA source (timer + media_player)."""
+    """Exact 19-string allowlist, verified against real HA source (timer + media_player + datetime)."""
     assert _LOCAL_INTENTS == {
         "HassStartTimer",
         "HassCancelTimer",
@@ -280,8 +280,10 @@ def test_local_intents_allowlist_matches_confirmed_set():
         "HassSetVolume",
         "HassSetVolumeRelative",
         "HassMediaSearchAndPlay",
+        "HassGetCurrentDate",
+        "HassGetCurrentTime",
     }
-    assert len(_LOCAL_INTENTS) == 17
+    assert len(_LOCAL_INTENTS) == 19
 
 
 @pytest.mark.parametrize("intent_name", sorted(_LOCAL_INTENTS))
@@ -300,8 +302,6 @@ def test_reject_non_local_intent_allows_every_allowlisted_intent(intent_name):
         "HassStopMoving",
         "HassGetState",
         "HassNevermind",
-        "HassGetCurrentDate",
-        "HassGetCurrentTime",
         "HassRespond",
         "HassBroadcast",
         "HassClimateGetTemperature",

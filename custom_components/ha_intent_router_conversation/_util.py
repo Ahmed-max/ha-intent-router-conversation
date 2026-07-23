@@ -26,6 +26,9 @@ _LOCAL_INTENTS: frozenset[str] = frozenset({
     "HassSetVolume",
     "HassSetVolumeRelative",
     "HassMediaSearchAndPlay",
+    # Date/time intents:
+    "HassGetCurrentDate",
+    "HassGetCurrentTime",
 })
 
 
