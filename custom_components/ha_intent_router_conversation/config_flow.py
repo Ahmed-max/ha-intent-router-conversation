@@ -77,14 +77,23 @@ class HAIntentRouterConversationConfigFlow(
         if user_input is not None:
             base_url = user_input[CONF_BASE_URL].rstrip("/")
             api_key = user_input[CONF_API_KEY]
+            new_unique_id = _normalize_base_url(base_url)
 
-            # Legacy entries created before unique_id support have none yet, so
-            # there is nothing to mismatch-check against — backfill instead of
-            # aborting. Entries that already have one are guarded so reconfigure
-            # can't be repointed at an unrelated router.
-            await self.async_set_unique_id(_normalize_base_url(base_url))
-            if reconfigure_entry.unique_id is not None:
-                self._abort_if_unique_id_mismatch()
+            # unique_id here is the (mutable) base_url, not an immutable device
+            # identity — _abort_if_unique_id_mismatch assumes the latter, so using
+            # it here would abort on every URL change, since changing the URL
+            # always changes the unique_id. Moving the router to a new URL is
+            # exactly what reconfigure is for, so don't use that check.
+            #
+            # The duplicate-prevention it was incidentally providing is still a
+            # real concern — reconfiguring entry A onto entry B's URL — so guard
+            # against that explicitly instead: abort only if some OTHER entry
+            # already claims the new unique_id.
+            other_entry = self.hass.config_entries.async_entry_for_domain_unique_id(
+                self.handler, new_unique_id
+            )
+            if other_entry is not None and other_entry.entry_id != reconfigure_entry.entry_id:
+                return self.async_abort(reason="already_configured")
 
             error = await _validate_connection(self.hass, base_url, api_key)
             if error:
@@ -92,6 +101,7 @@ class HAIntentRouterConversationConfigFlow(
             else:
                 return self.async_update_reload_and_abort(
                     reconfigure_entry,
+                    unique_id=new_unique_id,
                     data_updates={CONF_BASE_URL: base_url, CONF_API_KEY: api_key},
                 )
 
