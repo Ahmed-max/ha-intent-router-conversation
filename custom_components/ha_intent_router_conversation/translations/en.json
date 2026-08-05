@@ -12,6 +12,18 @@
           "base_url": "The root URL of your ha-intent-router service, e.g. http://ha-intent-router.local:8000",
           "api_key": "An API key created in ha-intent-router's Settings → Authentication panel"
         }
+      },
+      "reconfigure": {
+        "title": "Update HA Intent Router settings",
+        "description": "Update the base URL or API key for your ha-intent-router service.",
+        "data": {
+          "base_url": "Base URL",
+          "api_key": "API Key"
+        },
+        "data_description": {
+          "base_url": "The root URL of your ha-intent-router service, e.g. http://ha-intent-router.local:8000",
+          "api_key": "An API key created in ha-intent-router's Settings → Authentication panel"
+        }
       }
     },
     "error": {
@@ -20,7 +32,9 @@
       "unknown": "Unexpected error — check the Home Assistant logs for details."
     },
     "abort": {
-      "already_configured": "HA Intent Router is already configured."
+      "already_configured": "HA Intent Router is already configured.",
+      "reconfigure_successful": "HA Intent Router settings updated.",
+      "unique_id_mismatch": "This base URL belongs to a different HA Intent Router entry."
     }
   }
 }

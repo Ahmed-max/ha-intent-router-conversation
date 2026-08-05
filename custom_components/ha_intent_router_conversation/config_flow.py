@@ -19,12 +19,21 @@ _LOGGER = logging.getLogger(__name__)
 # a key authenticates at all, without requiring an admin-scoped key.
 _AUTH_PROBE_PATH = "/entities/meta/areas"
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_BASE_URL, default="http://ha-intent-router.local:8000"): str,
-        vol.Required(CONF_API_KEY): str,
-    }
-)
+
+def _schema_with_defaults(base_url: str = "http://ha-intent-router.local:8000", api_key: str = "") -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_BASE_URL, default=base_url): str,
+            vol.Required(CONF_API_KEY, default=api_key): str,
+        }
+    )
+
+
+STEP_USER_DATA_SCHEMA = _schema_with_defaults()
+
+
+def _normalize_base_url(base_url: str) -> str:
+    return base_url.rstrip("/").lower()
 
 
 class HAIntentRouterConversationConfigFlow(
@@ -41,6 +50,9 @@ class HAIntentRouterConversationConfigFlow(
             base_url = user_input[CONF_BASE_URL].rstrip("/")
             api_key = user_input[CONF_API_KEY]
 
+            await self.async_set_unique_id(_normalize_base_url(base_url))
+            self._abort_if_unique_id_configured()
+
             error = await _validate_connection(self.hass, base_url, api_key)
             if error:
                 errors["base"] = error
@@ -53,6 +65,42 @@ class HAIntentRouterConversationConfigFlow(
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict | None = None
+    ) -> config_entries.FlowResult:
+        reconfigure_entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            base_url = user_input[CONF_BASE_URL].rstrip("/")
+            api_key = user_input[CONF_API_KEY]
+
+            # Legacy entries created before unique_id support have none yet, so
+            # there is nothing to mismatch-check against — backfill instead of
+            # aborting. Entries that already have one are guarded so reconfigure
+            # can't be repointed at an unrelated router.
+            await self.async_set_unique_id(_normalize_base_url(base_url))
+            if reconfigure_entry.unique_id is not None:
+                self._abort_if_unique_id_mismatch()
+
+            error = await _validate_connection(self.hass, base_url, api_key)
+            if error:
+                errors["base"] = error
+            else:
+                return self.async_update_reload_and_abort(
+                    reconfigure_entry,
+                    data_updates={CONF_BASE_URL: base_url, CONF_API_KEY: api_key},
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_schema_with_defaults(
+                reconfigure_entry.data[CONF_BASE_URL],
+                reconfigure_entry.data[CONF_API_KEY],
+            ),
             errors=errors,
         )
 
