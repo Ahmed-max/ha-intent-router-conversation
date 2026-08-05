@@ -176,6 +176,21 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                     user_input.agent_id, _delta_stream()
                 ):
                     pass
+        except aiohttp.ClientResponseError as err:
+            if err.status in (401, 403):
+                _LOGGER.error(
+                    "ha-intent-router rejected our credentials: HTTP %s", err.status
+                )
+                return _error_result(
+                    user_input,
+                    "The intent router rejected my credentials. Please check the "
+                    "API key in the integration settings.",
+                )
+            _LOGGER.error("Error communicating with ha-intent-router: %s", err)
+            return _error_result(
+                user_input,
+                "Unable to reach the intent router. Please check your connection.",
+            )
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             _LOGGER.error("Error communicating with ha-intent-router: %s", err)
             return _error_result(
