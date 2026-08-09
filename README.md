@@ -1,5 +1,8 @@
 # ha-intent-router-conversation
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/v/release/Ahmed-max/ha-intent-router-conversation)](https://github.com/Ahmed-max/ha-intent-router-conversation/releases)
+
 A Home Assistant custom component that bridges the HA Assist pipeline to the
 [ha-intent-router](https://github.com/maxrouter/ha-intent-router) FastAPI service.
 Once installed, Assist uses ha-intent-router for entity resolution, intent classification,
@@ -19,11 +22,21 @@ and response generation instead of the built-in conversation agent.
 
 ## Installation
 
-This component is distributed as source — copy it manually into your HA config directory.
+### Via HACS (recommended)
+
+1. In HACS, go to **Integrations → ⋮ → Custom repositories**.
+2. Add `https://github.com/Ahmed-max/ha-intent-router-conversation` as an
+   **Integration** repository.
+3. Find **HA Intent Router** in HACS and install it.
+4. Restart Home Assistant.
+
+### Manual
+
+This component can also be distributed as source — copy it manually into your HA config directory.
 
 1. Clone (or download) this repository:
    ```bash
-   git clone ssh://git@192.168.178.130/max/ha-intent-router-conversation.git
+   git clone https://github.com/Ahmed-max/ha-intent-router-conversation.git
    ```
 2. Copy the component directory into your HA configuration:
    ```bash
