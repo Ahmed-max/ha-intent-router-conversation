@@ -142,9 +142,11 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                     "done" captures the router's full response text as the
                     source of truth (covers both the chat and non-chat done
                     shapes, which both carry a "response" key), plus its
-                    optional "error_code" for soft semantic failures (e.g.
-                    no_intent_match) — absent on an older router or on the
-                    CHAT path, which never carries error_code by design.
+                    "error_code" for soft semantic failures (e.g.
+                    no_intent_match) — always present now (null on success)
+                    since /query/stream emits one unified done shape for
+                    every intent, CHAT included; absent only when talking to
+                    an older router that predates this.
                     "error" stops the stream and carries its own "code";
                     the outer handler checks stream_error after the
                     async-for completes.
