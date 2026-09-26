@@ -289,6 +289,26 @@ def test_no_native_intent_keeps_existing_behavior(conv_mod, extra):
     response_cls.return_value.async_set_speech.assert_called_once_with("Hello there")
 
 
+def test_tokens_stream_as_one_chat_log_message(conv_mod):
+    """Only the first delta carries "role" — HA's ChatLog starts a new message on
+    every delta that has one, so a role per token split replies per token."""
+    async_handle, _ = _make_async_handle(result=_intent_response("x"))
+    events = [
+        {"type": "token", "text": "Hello"},
+        {"type": "token", "text": " there"},
+        {"type": "token", "text": "!"},
+        {"type": "done", "response": "Hello there!", "error_code": None},
+    ]
+
+    _, _, chat_log = _run(conv_mod, events, async_handle)
+
+    assert chat_log.streamed_deltas == [
+        {"role": "assistant", "content": "Hello"},
+        {"content": " there"},
+        {"content": "!"},
+    ]
+
+
 def test_stream_error_wins_over_native_intent(conv_mod):
     """A stream error still short-circuits before any native execution."""
     async_handle, calls = _make_async_handle(result=_intent_response("x"))
