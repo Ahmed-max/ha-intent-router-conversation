@@ -6,7 +6,10 @@ import pytest
 from custom_components.ha_intent_router_conversation._util import (
     _LOCAL_INTENTS,
     _reject_non_local_intent,
+    NATIVE_ERROR_FALLBACK_SPEECH,
     build_query_payload,
+    native_intent_error_speech,
+    parse_native_intent,
     parse_response_text,
     parse_sse_data_line,
     resolve_area,
@@ -311,3 +314,99 @@ def test_reject_non_local_intent_allows_every_allowlisted_intent(intent_name):
 def test_reject_non_local_intent_rejects_everything_else(intent_name):
     """async_handle_intents polarity: True = reject this match, fall through to router."""
     assert _reject_non_local_intent(_fake_result(intent_name)) is True
+
+
+# ---------------------------------------------------------------------------
+# parse_native_intent
+# ---------------------------------------------------------------------------
+
+def test_parse_native_intent_valid_timer_start():
+    event = {"type": "done", "native_intent": {
+        "intent": "HassStartTimer", "slots": {"hours": 1, "minutes": 30},
+    }}
+    assert parse_native_intent(event) == (
+        "HassStartTimer", {"hours": {"value": 1}, "minutes": {"value": 30}},
+    )
+
+
+def test_parse_native_intent_empty_slots():
+    event = {"native_intent": {"intent": "HassTimerStatus", "slots": {}}}
+    assert parse_native_intent(event) == ("HassTimerStatus", {})
+
+
+def test_parse_native_intent_missing_slots_key_is_empty_slots():
+    assert parse_native_intent({"native_intent": {"intent": "HassGetCurrentTime"}}) == (
+        "HassGetCurrentTime", {},
+    )
+
+
+def test_parse_native_intent_missing_key_is_none():
+    """An older router that predates native delegation omits the key entirely."""
+    assert parse_native_intent({"type": "done", "response": "ok"}) is None
+
+
+def test_parse_native_intent_null_is_none():
+    assert parse_native_intent({"native_intent": None}) is None
+
+
+@pytest.mark.parametrize("native", ["HassStartTimer", ["HassStartTimer"], 1, True])
+def test_parse_native_intent_non_dict_is_none(native):
+    assert parse_native_intent({"native_intent": native}) is None
+
+
+@pytest.mark.parametrize("intent_name", ["HassTurnOn", "HassTurnOff", "Evil", "", None, 5])
+def test_parse_native_intent_rejects_intent_outside_allowlist(intent_name):
+    event = {"native_intent": {"intent": intent_name, "slots": {}}}
+    assert parse_native_intent(event) is None
+
+
+@pytest.mark.parametrize("slots", [None, [], ["hours", 1], "hours=1", 3])
+def test_parse_native_intent_non_dict_slots_is_none(slots):
+    event = {"native_intent": {"intent": "HassStartTimer", "slots": slots}}
+    assert parse_native_intent(event) is None
+
+
+def test_parse_native_intent_drops_bad_slot_values():
+    event = {"native_intent": {"intent": "HassStartTimer", "slots": {
+        "minutes": 5,
+        "name": "pasta",
+        "hours": None,
+        "seconds": 1.5,
+        "flag": True,
+        "nested": {"value": 1},
+        "list": [1],
+    }}}
+    assert parse_native_intent(event) == (
+        "HassStartTimer", {"minutes": {"value": 5}, "name": {"value": "pasta"}},
+    )
+
+
+def test_parse_native_intent_drops_non_str_slot_keys():
+    event = {"native_intent": {"intent": "HassStartTimer", "slots": {1: 5, "minutes": 5}}}
+    assert parse_native_intent(event) == ("HassStartTimer", {"minutes": {"value": 5}})
+
+
+# ---------------------------------------------------------------------------
+# native_intent_error_speech
+# ---------------------------------------------------------------------------
+
+class _ErrWithKey(Exception):
+    def __init__(self, message="", response_key=None):
+        super().__init__(message)
+        self.response_key = response_key
+
+
+@pytest.mark.parametrize("key", ["timer_not_found", "multiple_timers_matched", "no_timer_support"])
+def test_native_intent_error_speech_known_timer_keys(key):
+    speech = native_intent_error_speech(_ErrWithKey("dev message", key))
+    assert speech != NATIVE_ERROR_FALLBACK_SPEECH
+    assert "dev message" not in speech
+
+
+def test_native_intent_error_speech_never_speaks_developer_message():
+    err = _ErrWithKey("Device does not support timers: device_id=abc", "unknown_key")
+    assert native_intent_error_speech(err) == NATIVE_ERROR_FALLBACK_SPEECH
+
+
+def test_native_intent_error_speech_no_response_key_falls_back():
+    assert native_intent_error_speech(ValueError("boom")) == NATIVE_ERROR_FALLBACK_SPEECH
