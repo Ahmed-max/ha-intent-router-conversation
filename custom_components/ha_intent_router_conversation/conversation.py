@@ -167,8 +167,15 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                         if event_type == "token":
                             text = event.get("text", "")
                             if text:
+                                # Only the first delta carries "role": HA's
+                                # ChatLog starts a new message on every delta
+                                # that has one, so repeating it would split the
+                                # reply into one chat-log message per token.
+                                if full_response:
+                                    yield {"content": text}
+                                else:
+                                    yield {"role": "assistant", "content": text}
                                 full_response += text
-                                yield {"role": "assistant", "content": text}
                         elif event_type == "done":
                             full_response = parse_response_text(event) or full_response
                             done_error_code = event.get("error_code")
