@@ -9,53 +9,15 @@ own instance of that class can't be built normally. To exercise the real
 for `ConversationEntity` and reloads the module fresh, then builds the entity with
 `object.__new__` (skipping `__init__`, which needs a full config-entry/hass setup this
 test doesn't need) and sets only the attributes `_async_handle_message` actually reads.
+The reload itself lives in conftest.py's `conv_mod` fixture.
 """
 import asyncio
-import importlib
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
 from custom_components.ha_intent_router_conversation.const import CONF_API_KEY, CONF_BASE_URL
-
-
-@pytest.fixture
-def conv_mod():
-    """Reload conversation.py with a real, subclassable ConversationEntity stand-in."""
-    # conversation.py does `from homeassistant.components import conversation`. Since
-    # `homeassistant.components` is itself a MagicMock, that IMPORT_FROM binds to the
-    # auto-vivified `.conversation` *attribute* of that mock (getattr never raises
-    # AttributeError on a MagicMock, so Python's import machinery never falls back to
-    # sys.modules["homeassistant.components.conversation"] — that sys.modules entry is
-    # a decoy nothing actually reads). So the object to patch is the attribute, not the
-    # sys.modules entry.
-    components_pkg = sys.modules["homeassistant.components"]
-    conversation_attr = components_pkg.conversation
-    original_entity_base = conversation_attr.ConversationEntity
-    original_result = conversation_attr.ConversationResult
-
-    class _RealConversationEntityBase:
-        pass
-
-    class _RealConversationResult:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-
-    conversation_attr.ConversationEntity = _RealConversationEntityBase
-    conversation_attr.ConversationResult = _RealConversationResult
-    sys.modules.pop("custom_components.ha_intent_router_conversation.conversation", None)
-    try:
-        module = importlib.import_module(
-            "custom_components.ha_intent_router_conversation.conversation"
-        )
-        yield module
-    finally:
-        conversation_attr.ConversationEntity = original_entity_base
-        conversation_attr.ConversationResult = original_result
-        sys.modules.pop("custom_components.ha_intent_router_conversation.conversation", None)
 
 
 class _RaisingResponse:

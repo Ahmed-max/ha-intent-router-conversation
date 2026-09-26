@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 
 import aiohttp
@@ -17,6 +18,8 @@ from .const import CONF_API_KEY, CONF_BASE_URL, DOMAIN
 from ._util import (
     _reject_non_local_intent,
     build_query_payload,
+    native_intent_error_speech,
+    parse_native_intent,
     parse_response_text,
     parse_sse_data_line,
     resolve_area,
@@ -125,6 +128,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
         stream_error: str | None = None
         stream_error_code: str | None = None
         done_error_code: str | None = None
+        native: tuple[str, dict] | None = None
 
         try:
             async with session.post(
@@ -147,11 +151,14 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                     since /query/stream emits one unified done shape for
                     every intent, CHAT included; absent only when talking to
                     an older router that predates this.
+                    "done" may also carry a "native_intent" the router
+                    classified but deliberately didn't execute; it's captured
+                    here and executed via HA's intent system after the stream.
                     "error" stops the stream and carries its own "code";
                     the outer handler checks stream_error after the
                     async-for completes.
                     """
-                    nonlocal full_response, stream_error, stream_error_code, done_error_code
+                    nonlocal full_response, stream_error, stream_error_code, done_error_code, native
                     async for raw_line in resp.content:
                         event = parse_sse_data_line(raw_line.decode("utf-8"))
                         if event is None:
@@ -165,6 +172,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                         elif event_type == "done":
                             full_response = parse_response_text(event) or full_response
                             done_error_code = event.get("error_code")
+                            native = parse_native_intent(event)
                         elif event_type == "error":
                             stream_error = event.get("message") or "Unknown stream error"
                             stream_error_code = event.get("code")
@@ -211,6 +219,13 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                 error_code=_map_error_code(stream_error_code),
             )
 
+        if native is not None:
+            # The router's "response" is only a human-readable fallback on a
+            # native turn — never speak it; HA's intent handler provides speech.
+            return await self._async_handle_native_intent(
+                user_input, chat_log, *native
+            )
+
         if done_error_code:
             _LOGGER.debug("ha-intent-router soft failure: %s", done_error_code)
             response = intent.IntentResponse(language=user_input.language)
@@ -228,6 +243,65 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
             conversation_id=user_input.conversation_id,
             continue_conversation=False,
         )
+
+    async def _async_handle_native_intent(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+        intent_name: str,
+        slots: dict,
+    ) -> conversation.ConversationResult:
+        """Execute a router-delegated native intent through HA's intent system.
+
+        device_id is essential: HA's timer intents are bound to the satellite
+        device that asked, and HassStartTimer fails with "timers not supported"
+        without it.
+        """
+        kwargs = {
+            "text_input": user_input.text,
+            "context": user_input.context,
+            "language": user_input.language,
+            "assistant": conversation.DOMAIN,
+            "device_id": user_input.device_id,
+            "conversation_agent_id": user_input.agent_id,
+        }
+        if _async_handle_accepts_satellite_id():
+            kwargs["satellite_id"] = getattr(user_input, "satellite_id", None)
+
+        try:
+            response = await intent.async_handle(
+                self.hass, DOMAIN, intent_name, slots, **kwargs
+            )
+        except intent.IntentError as err:
+            # IntentError is the base of IntentHandleError, MatchFailedError,
+            # InvalidSlotInfo, UnknownIntent and IntentUnexpectedError.
+            _LOGGER.warning(
+                "Native intent %s (slots=%s) failed: %r", intent_name, slots, err
+            )
+            result = _error_result(user_input, native_intent_error_speech(err))
+        else:
+            result = conversation.ConversationResult(
+                response=response,
+                conversation_id=user_input.conversation_id,
+                continue_conversation=False,
+            )
+
+        # The router streams no tokens for a native turn, so nothing has been
+        # added to chat_log yet — record the spoken result exactly once, the
+        # same way HA's default agent closes out an intent turn.
+        speech = result.response.speech.get("plain", {}).get("speech", "")
+        chat_log.async_add_assistant_content_without_tools(
+            conversation.AssistantContent(agent_id=user_input.agent_id, content=speech)
+        )
+        return result
+
+
+def _async_handle_accepts_satellite_id() -> bool:
+    """Whether the installed HA's intent.async_handle takes satellite_id."""
+    try:
+        return "satellite_id" in inspect.signature(intent.async_handle).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _error_result(

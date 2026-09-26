@@ -98,6 +98,59 @@ def parse_sse_data_line(line: str) -> dict | None:
     return parsed
 
 
+def parse_native_intent(event: dict) -> tuple[str, dict] | None:
+    """Extract a router-delegated native intent from a "done" event / QueryResponse.
+
+    The router returns "native_intent": null | {"intent": str, "slots": {str: int|str}}
+    for requests it classified as HA-native (timers, date/time) but deliberately did
+    not execute. Returns (intent_name, slots) with slots already in HA's intent slot
+    format ({"hours": {"value": 1}}), or None when the key is missing (older router),
+    null, or malformed.
+
+    The intent name is re-checked against _LOCAL_INTENTS here — defense in depth,
+    the router is not trusted to gate which HA intents this integration executes.
+    Individual slot entries with a non-str key or a non-int/str value are dropped;
+    bool is rejected explicitly since it's an int subclass.
+    """
+    native = event.get("native_intent")
+    if not isinstance(native, dict):
+        return None
+    intent_name = native.get("intent")
+    if not isinstance(intent_name, str) or intent_name not in _LOCAL_INTENTS:
+        return None
+    raw_slots = native.get("slots", {})
+    if not isinstance(raw_slots, dict):
+        return None
+    slots = {
+        key: {"value": value}
+        for key, value in raw_slots.items()
+        if isinstance(key, str)
+        and isinstance(value, (int, str))
+        and not isinstance(value, bool)
+    }
+    return intent_name, slots
+
+
+# English speech for IntentHandleError.response_key values raised by HA's timer
+# intents (homeassistant/components/intent/timers.py). HA's default agent renders
+# these from its per-language intent responses, which this agent doesn't load; the
+# exception message itself is developer-facing (e.g. "Device does not support
+# timers: device_id=..."), so it's never spoken.
+_NATIVE_ERROR_SPEECH: dict[str, str] = {
+    "timer_not_found": "I couldn't find that timer.",
+    "multiple_timers_matched": "More than one timer matched. Please be more specific.",
+    "no_timer_support": "Timers aren't supported on this device.",
+}
+NATIVE_ERROR_FALLBACK_SPEECH = "Sorry, I couldn't do that."
+
+
+def native_intent_error_speech(err: Exception) -> str:
+    """Return the user-facing speech for an error raised by intent.async_handle."""
+    return _NATIVE_ERROR_SPEECH.get(
+        getattr(err, "response_key", None) or "", NATIVE_ERROR_FALLBACK_SPEECH
+    )
+
+
 def resolve_area(
     device_id: str | None,
     dev_reg,
