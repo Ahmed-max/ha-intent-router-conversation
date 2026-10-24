@@ -19,6 +19,7 @@ from ._util import (
     _reject_non_local_intent,
     build_query_payload,
     native_intent_error_speech,
+    native_intent_success_speech,
     parse_native_intent,
     parse_response_text,
     parse_sse_data_line,
@@ -287,6 +288,12 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
             )
             result = _error_result(user_input, native_intent_error_speech(err))
         else:
+            if not response.speech.get("plain", {}).get("speech"):
+                response.async_set_speech(
+                    native_intent_success_speech(
+                        intent_name, slots, response.speech_slots
+                    )
+                )
             result = conversation.ConversationResult(
                 response=response,
                 conversation_id=user_input.conversation_id,

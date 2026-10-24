@@ -1,4 +1,5 @@
 """Unit tests for _util.py — no HA imports, plain pytest."""
+import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,8 +8,10 @@ from custom_components.ha_intent_router_conversation._util import (
     _LOCAL_INTENTS,
     _reject_non_local_intent,
     NATIVE_ERROR_FALLBACK_SPEECH,
+    NATIVE_SUCCESS_FALLBACK_SPEECH,
     build_query_payload,
     native_intent_error_speech,
+    native_intent_success_speech,
     parse_native_intent,
     parse_response_text,
     parse_sse_data_line,
@@ -410,3 +413,60 @@ def test_native_intent_error_speech_never_speaks_developer_message():
 
 def test_native_intent_error_speech_no_response_key_falls_back():
     assert native_intent_error_speech(ValueError("boom")) == NATIVE_ERROR_FALLBACK_SPEECH
+
+
+# ---------------------------------------------------------------------------
+# native_intent_success_speech
+# ---------------------------------------------------------------------------
+
+def _ha_slots(**values):
+    return {k: {"value": v} for k, v in values.items()}
+
+
+def _status(**overrides):
+    status = {"name": "", "is_active": True, "rounded_hours_left": 0,
+              "rounded_minutes_left": 0, "rounded_seconds_left": 0}
+    status.update(overrides)
+    return status
+
+
+@pytest.mark.parametrize("intent_name,slots,speech_slots,expected", [
+    ("HassStartTimer", _ha_slots(hours=1, minutes=30), {}, "Timer set for 1 hour and 30 minutes."),
+    ("HassStartTimer", _ha_slots(minutes=1), {}, "Timer set for 1 minute."),
+    ("HassStartTimer", _ha_slots(hours=2, minutes=5, seconds=10), {},
+     "Timer set for 2 hours, 5 minutes and 10 seconds."),
+    ("HassStartTimer", _ha_slots(minutes=10, name="pizza"), {}, "Pizza timer set for 10 minutes."),
+    ("HassCancelTimer", {}, {}, "Timer cancelled."),
+    ("HassCancelTimer", _ha_slots(name="pasta"), {}, "Pasta timer cancelled."),
+    ("HassCancelAllTimers", {}, {"canceled": 0}, "There were no timers to cancel."),
+    ("HassCancelAllTimers", {}, {"canceled": 1}, "Timer cancelled."),
+    ("HassCancelAllTimers", {}, {"canceled": 3}, "All timers cancelled."),
+    ("HassIncreaseTimer", _ha_slots(minutes=5), {}, "Added 5 minutes."),
+    ("HassDecreaseTimer", _ha_slots(seconds=30), {}, "Removed 30 seconds."),
+    ("HassPauseTimer", {}, {}, "Timer paused."),
+    ("HassUnpauseTimer", {}, {}, "Timer resumed."),
+    ("HassTimerStatus", {}, {"timers": []}, "There are no timers."),
+    ("HassTimerStatus", {}, {"timers": [_status(rounded_hours_left=1, rounded_minutes_left=15)]},
+     "1 hour and 15 minutes left."),
+    ("HassTimerStatus", {}, {"timers": [_status(name="pizza", rounded_minutes_left=4, is_active=False)]},
+     "Pizza timer: 4 minutes left, paused."),
+    ("HassTimerStatus", {}, {"timers": [_status(rounded_minutes_left=2), _status()]},
+     "You have 2 timers. Timer: 2 minutes left."),
+    ("HassGetCurrentTime", {}, {"time": datetime.time(20, 38, 12)}, "It's 8:38 PM."),
+    ("HassGetCurrentTime", {}, {"time": datetime.time(0, 5)}, "It's 12:05 AM."),
+    ("HassGetCurrentDate", {}, {"date": datetime.date(2026, 10, 24)}, "Today is Saturday, October 24, 2026."),
+])
+def test_native_intent_success_speech(intent_name, slots, speech_slots, expected):
+    assert native_intent_success_speech(intent_name, slots, speech_slots) == expected
+
+
+@pytest.mark.parametrize("intent_name,slots,speech_slots", [
+    ("HassMediaPause", {}, {}),
+    ("HassStartTimer", {}, {}),
+    ("HassTimerStatus", {}, {}),
+    ("HassTimerStatus", {}, {"timers": "garbage"}),
+    ("HassGetCurrentTime", {}, {"time": "20:38"}),
+    ("HassGetCurrentDate", {}, None),
+])
+def test_native_intent_success_speech_unknown_shapes_fall_back(intent_name, slots, speech_slots):
+    assert native_intent_success_speech(intent_name, slots, speech_slots) == NATIVE_SUCCESS_FALLBACK_SPEECH

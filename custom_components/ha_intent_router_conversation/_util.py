@@ -151,6 +151,102 @@ def native_intent_error_speech(err: Exception) -> str:
     )
 
 
+# HA's timer and date/time intent handlers return a response with no speech (at most
+# speech_slots); the default agent renders "Timer started" etc. from its per-language
+# responses, which intent.async_handle never applies. Same gap as the error path above.
+NATIVE_SUCCESS_FALLBACK_SPEECH = "Done."
+
+
+def _format_duration(hours: int = 0, minutes: int = 0, seconds: int = 0) -> str:
+    """'1 hour and 30 minutes', '2 minutes', '' when every part is zero."""
+    parts = [
+        f"{n} {unit}{'' if n == 1 else 's'}"
+        for n, unit in ((hours, "hour"), (minutes, "minute"), (seconds, "second"))
+        if n
+    ]
+    if len(parts) > 1:
+        return ", ".join(parts[:-1]) + " and " + parts[-1]
+    return parts[0] if parts else ""
+
+
+def _slot_int(slots: dict, key: str) -> int:
+    value = (slots.get(key) or {}).get("value")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _timer_label(name) -> str:
+    return f"{name.capitalize()} timer" if isinstance(name, str) and name else "Timer"
+
+
+def native_intent_success_speech(
+    intent_name: str, slots: dict, speech_slots: dict | None
+) -> str:
+    """English speech for a native intent that succeeded without speech of its own.
+
+    slots is the HA-format dict sent to intent.async_handle ({"hours": {"value": 1}});
+    speech_slots is the handler's response.speech_slots (keys per HA's
+    components/intent/timers.py and intent/__init__.py). Unknown shapes degrade to
+    NATIVE_SUCCESS_FALLBACK_SPEECH rather than raising.
+    """
+    speech_slots = speech_slots if isinstance(speech_slots, dict) else {}
+    duration = _format_duration(
+        _slot_int(slots, "hours"), _slot_int(slots, "minutes"), _slot_int(slots, "seconds")
+    )
+    name = (slots.get("name") or {}).get("value")
+
+    if intent_name == "HassStartTimer" and duration:
+        return f"{_timer_label(name)} set for {duration}."
+    if intent_name == "HassCancelTimer":
+        return f"{_timer_label(name)} cancelled."
+    if intent_name == "HassCancelAllTimers":
+        canceled = speech_slots.get("canceled")
+        if canceled == 0:
+            return "There were no timers to cancel."
+        if canceled == 1:
+            return "Timer cancelled."
+        return "All timers cancelled."
+    if intent_name == "HassIncreaseTimer" and duration:
+        return f"Added {duration}."
+    if intent_name == "HassDecreaseTimer" and duration:
+        return f"Removed {duration}."
+    if intent_name == "HassPauseTimer":
+        return f"{_timer_label(name)} paused."
+    if intent_name == "HassUnpauseTimer":
+        return f"{_timer_label(name)} resumed."
+    if intent_name == "HassTimerStatus":
+        return _timer_status_speech(speech_slots.get("timers"))
+    if intent_name == "HassGetCurrentTime":
+        time = speech_slots.get("time")
+        if hasattr(time, "hour") and hasattr(time, "minute"):
+            hour12 = time.hour % 12 or 12
+            return f"It's {hour12}:{time.minute:02d} {'AM' if time.hour < 12 else 'PM'}."
+    if intent_name == "HassGetCurrentDate":
+        date = speech_slots.get("date")
+        if hasattr(date, "strftime") and hasattr(date, "day"):
+            return f"Today is {date.strftime('%A, %B')} {date.day}, {date.year}."
+    return NATIVE_SUCCESS_FALLBACK_SPEECH
+
+
+def _timer_status_speech(timers) -> str:
+    if not isinstance(timers, list):
+        return NATIVE_SUCCESS_FALLBACK_SPEECH
+    if not timers:
+        return "There are no timers."
+    first = timers[0] if isinstance(timers[0], dict) else {}
+    left = _format_duration(
+        first.get("rounded_hours_left") or 0,
+        first.get("rounded_minutes_left") or 0,
+        first.get("rounded_seconds_left") or 0,
+    )
+    status = f"{left} left" if left else "almost done"
+    if first.get("is_active") is False:
+        status += ", paused"
+    label = _timer_label(first.get("name"))
+    if len(timers) == 1:
+        return f"{label}: {status}." if first.get("name") else f"{status[0].upper()}{status[1:]}."
+    return f"You have {len(timers)} timers. {label}: {status}."
+
+
 def resolve_area(
     device_id: str | None,
     dev_reg,

@@ -223,6 +223,39 @@ def test_native_intent_fallback_text_is_never_spoken(conv_mod):
     assert "Handing to Home Assistant" not in chat_log.added[0].content
 
 
+class _SilentIntentResponse:
+    """Like the real IntentResponse a timer handler returns: no speech, maybe speech_slots."""
+
+    def __init__(self, speech_slots=None):
+        self.speech = {}
+        self.speech_slots = speech_slots or {}
+
+    def async_set_speech(self, speech):
+        self.speech = {"plain": {"speech": speech, "extra_data": None}}
+
+
+def test_native_intent_without_ha_speech_gets_spoken_confirmation(conv_mod):
+    ha_response = _SilentIntentResponse()
+    async_handle, _ = _make_async_handle(result=ha_response)
+
+    result, _, chat_log = _run(conv_mod, [_NATIVE_DONE], async_handle)
+
+    expected = "Timer set for 1 hour and 30 minutes."
+    assert result.response is ha_response
+    assert result.response.speech["plain"]["speech"] == expected
+    assert [c.content for c in chat_log.added] == [expected]
+
+
+def test_native_intent_keeps_speech_ha_already_provided(conv_mod):
+    ha_response = _intent_response("Timer started")
+    async_handle, _ = _make_async_handle(result=ha_response)
+
+    _, _, chat_log = _run(conv_mod, [_NATIVE_DONE], async_handle)
+
+    ha_response.async_set_speech.assert_not_called()
+    assert [c.content for c in chat_log.added] == ["Timer started"]
+
+
 def test_native_intent_omits_satellite_id_when_ha_signature_lacks_it(conv_mod):
     async_handle, calls = _make_async_handle(
         result=_intent_response("ok"), with_satellite_id=False
