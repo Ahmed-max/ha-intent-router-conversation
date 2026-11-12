@@ -36,5 +36,18 @@
       "reconfigure_successful": "HA Intent Router settings updated.",
       "unique_id_mismatch": "This base URL belongs to a different HA Intent Router entry."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA Intent Router options",
+        "data": {
+          "continue_on_clarification": "Listen for the answer to a clarifying question"
+        },
+        "data_description": {
+          "continue_on_clarification": "When the router asks a clarifying question (e.g. \"Which light?\"), keep the satellite listening so you can answer without saying the wake word again. Off by default."
+        }
+      }
+    }
   }
 }

@@ -14,7 +14,13 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, in
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_API_KEY, CONF_BASE_URL, DOMAIN
+from .const import (
+    CONF_API_KEY,
+    CONF_BASE_URL,
+    CONF_CONTINUE_ON_CLARIFICATION,
+    DEFAULT_CONTINUE_ON_CLARIFICATION,
+    DOMAIN,
+)
 from ._util import (
     _reject_non_local_intent,
     build_query_payload,
@@ -24,6 +30,7 @@ from ._util import (
     parse_response_text,
     parse_sse_data_line,
     resolve_area,
+    should_continue_conversation,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,6 +101,13 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
+        # The ChatLog's id is the conversation's real id: HA assigns it before
+        # this agent runs, even on the first turn, and reuses it across wake-word
+        # runs for ~5 idle minutes. user_input.conversation_id is None on a first
+        # turn in HA releases before core PR #188909, which left the router with
+        # no session to remember. Send and return this one id everywhere.
+        conversation_id = chat_log.conversation_id
+
         # Let HA's native intent system handle timers and media-transport first.
         # _reject_non_local_intent returns True (reject) for everything outside the
         # allowlist, so only those 17 intents ever execute here; everything else
@@ -105,7 +119,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
         if local_response is not None:
             return conversation.ConversationResult(
                 response=local_response,
-                conversation_id=user_input.conversation_id,
+                conversation_id=conversation_id,
                 continue_conversation=False,
             )
 
@@ -115,7 +129,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
 
         payload = build_query_payload(
             utterance=user_input.text,
-            conversation_id=user_input.conversation_id,
+            session_id=conversation_id,
             device_id=user_input.device_id,
             area_id=area_id,
             area_name=area_name,
@@ -129,6 +143,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
         stream_error: str | None = None
         stream_error_code: str | None = None
         done_error_code: str | None = None
+        done_intent_type: str | None = None
         native: tuple[str, dict] | None = None
 
         try:
@@ -159,7 +174,8 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                     the outer handler checks stream_error after the
                     async-for completes.
                     """
-                    nonlocal full_response, stream_error, stream_error_code, done_error_code, native
+                    nonlocal full_response, stream_error, stream_error_code, done_error_code
+                    nonlocal done_intent_type, native
                     async for raw_line in resp.content:
                         event = parse_sse_data_line(raw_line.decode("utf-8"))
                         if event is None:
@@ -180,6 +196,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                         elif event_type == "done":
                             full_response = parse_response_text(event) or full_response
                             done_error_code = event.get("error_code")
+                            done_intent_type = event.get("intent_type")
                             native = parse_native_intent(event)
                         elif event_type == "error":
                             stream_error = event.get("message") or "Unknown stream error"
@@ -201,28 +218,34 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                 )
                 return _error_result(
                     user_input,
+                    conversation_id,
                     "The intent router rejected my credentials. Please check the "
                     "API key in the integration settings.",
                 )
             _LOGGER.error("Error communicating with ha-intent-router: %s", err)
             return _error_result(
                 user_input,
+                conversation_id,
                 "Unable to reach the intent router. Please check your connection.",
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             _LOGGER.error("Error communicating with ha-intent-router: %s", err)
             return _error_result(
                 user_input,
+                conversation_id,
                 "Unable to reach the intent router. Please check your connection.",
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("Unexpected error from ha-intent-router: %s", err)
-            return _error_result(user_input, "An unexpected error occurred.")
+            return _error_result(
+                user_input, conversation_id, "An unexpected error occurred."
+            )
 
         if stream_error:
             _LOGGER.error("ha-intent-router stream error: %s", stream_error)
             return _error_result(
                 user_input,
+                conversation_id,
                 "Unable to reach the intent router. Please check your connection.",
                 error_code=_map_error_code(stream_error_code),
             )
@@ -231,31 +254,36 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
             # The router's "response" is only a human-readable fallback on a
             # native turn — never speak it; HA's intent handler provides speech.
             return await self._async_handle_native_intent(
-                user_input, chat_log, *native
+                user_input, chat_log, conversation_id, *native
             )
 
-        if done_error_code:
-            _LOGGER.debug("ha-intent-router soft failure: %s", done_error_code)
-            response = intent.IntentResponse(language=user_input.language)
-            response.async_set_error(_map_error_code(done_error_code), full_response)
-            return conversation.ConversationResult(
-                response=response,
-                conversation_id=user_input.conversation_id,
-                continue_conversation=False,
-            )
+        # A clarification ("Which light?") can end in a soft error (low
+        # confidence carries no_intent_match) or in plain speech; either way the
+        # next utterance is the answer, so the opt-in applies to both branches.
+        continue_conversation = should_continue_conversation(
+            done_intent_type,
+            self._config.get(
+                CONF_CONTINUE_ON_CLARIFICATION, DEFAULT_CONTINUE_ON_CLARIFICATION
+            ),
+        )
 
         response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(full_response)
+        if done_error_code:
+            _LOGGER.debug("ha-intent-router soft failure: %s", done_error_code)
+            response.async_set_error(_map_error_code(done_error_code), full_response)
+        else:
+            response.async_set_speech(full_response)
         return conversation.ConversationResult(
             response=response,
-            conversation_id=user_input.conversation_id,
-            continue_conversation=False,
+            conversation_id=conversation_id,
+            continue_conversation=continue_conversation,
         )
 
     async def _async_handle_native_intent(
         self,
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
+        conversation_id: str,
         intent_name: str,
         slots: dict,
     ) -> conversation.ConversationResult:
@@ -286,7 +314,9 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
             _LOGGER.warning(
                 "Native intent %s (slots=%s) failed: %r", intent_name, slots, err
             )
-            result = _error_result(user_input, native_intent_error_speech(err))
+            result = _error_result(
+                user_input, conversation_id, native_intent_error_speech(err)
+            )
         else:
             if not response.speech.get("plain", {}).get("speech"):
                 response.async_set_speech(
@@ -296,7 +326,7 @@ class HAIntentRouterConversationEntity(conversation.ConversationEntity):
                 )
             result = conversation.ConversationResult(
                 response=response,
-                conversation_id=user_input.conversation_id,
+                conversation_id=conversation_id,
                 continue_conversation=False,
             )
 
@@ -320,6 +350,7 @@ def _async_handle_accepts_satellite_id() -> bool:
 
 def _error_result(
     user_input: conversation.ConversationInput,
+    conversation_id: str,
     message: str,
     error_code: intent.IntentResponseErrorCode = intent.IntentResponseErrorCode.FAILED_TO_HANDLE,
 ) -> conversation.ConversationResult:
@@ -330,6 +361,6 @@ def _error_result(
     )
     return conversation.ConversationResult(
         response=response,
-        conversation_id=user_input.conversation_id,
+        conversation_id=conversation_id,
         continue_conversation=False,
     )

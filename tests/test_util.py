@@ -9,6 +9,7 @@ from custom_components.ha_intent_router_conversation._util import (
     _reject_non_local_intent,
     NATIVE_ERROR_FALLBACK_SPEECH,
     NATIVE_SUCCESS_FALLBACK_SPEECH,
+    CLARIFICATION_INTENT_TYPES,
     build_query_payload,
     native_intent_error_speech,
     native_intent_success_speech,
@@ -16,6 +17,7 @@ from custom_components.ha_intent_router_conversation._util import (
     parse_response_text,
     parse_sse_data_line,
     resolve_area,
+    should_continue_conversation,
 )
 
 
@@ -26,7 +28,7 @@ from custom_components.ha_intent_router_conversation._util import (
 def test_payload_text_medium_when_no_device():
     payload = build_query_payload(
         utterance="what is the temperature",
-        conversation_id="sess-abc",
+        session_id="sess-abc",
         device_id=None,
         area_id=None,
         area_name=None,
@@ -43,7 +45,7 @@ def test_payload_text_medium_when_no_device():
 def test_payload_voice_medium_when_device_present():
     payload = build_query_payload(
         utterance="turn on the lights",
-        conversation_id="sess-xyz",
+        session_id="sess-xyz",
         device_id="media_player.bedroom_speaker",
         area_id="area_bedroom",
         area_name="Bedroom",
@@ -59,7 +61,7 @@ def test_payload_voice_medium_no_area():
     """Device present but area not resolved — area fields must be None."""
     payload = build_query_payload(
         utterance="dim the lights",
-        conversation_id="sess-1",
+        session_id="sess-1",
         device_id="some_device_id",
         area_id=None,
         area_name=None,
@@ -70,16 +72,28 @@ def test_payload_voice_medium_no_area():
     assert payload["satellite_area_name"] is None
 
 
-def test_payload_session_id_none():
-    """None conversation_id is passed through (router accepts null session_id)."""
-    payload = build_query_payload(
-        utterance="hello",
-        conversation_id=None,
-        device_id=None,
-        area_id=None,
-        area_name=None,
-    )
-    assert payload["session_id"] is None
+# ---------------------------------------------------------------------------
+# should_continue_conversation
+# ---------------------------------------------------------------------------
+
+def test_clarification_intent_types_match_router_exits():
+    """ha-intent-router's clarification exits (pipeline/run.py)."""
+    assert CLARIFICATION_INTENT_TYPES == {"ambiguous", "ambiguous_target", "low_confidence"}
+
+
+@pytest.mark.parametrize("intent_type", sorted(CLARIFICATION_INTENT_TYPES))
+def test_continue_on_clarification_when_enabled(intent_type):
+    assert should_continue_conversation(intent_type, True) is True
+
+
+@pytest.mark.parametrize("intent_type", sorted(CLARIFICATION_INTENT_TYPES))
+def test_never_continue_when_disabled(intent_type):
+    assert should_continue_conversation(intent_type, False) is False
+
+
+@pytest.mark.parametrize("intent_type", ["CONTROL", "QUERY", "CHAT", "NATIVE", "error", None, ""])
+def test_never_continue_on_non_clarification(intent_type):
+    assert should_continue_conversation(intent_type, True) is False
 
 
 # ---------------------------------------------------------------------------

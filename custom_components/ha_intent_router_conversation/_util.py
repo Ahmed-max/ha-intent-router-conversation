@@ -44,12 +44,17 @@ def _reject_non_local_intent(result) -> bool:
 
 def build_query_payload(
     utterance: str,
-    conversation_id: str | None,
+    session_id: str,
     device_id: str | None,
     area_id: str | None,
     area_name: str | None,
 ) -> dict:
     """Build the JSON payload for POST /query.
+
+    session_id must be the ChatLog's conversation_id, not
+    ConversationInput.conversation_id: the latter is None on a conversation's
+    first turn in HA releases before core PR #188909, and the router keys its
+    session memory and dialogue state on this value.
 
     medium/source follows the router's convention: "voice" for satellite-originated
     requests (device_id is set), "text" for everything else.
@@ -57,13 +62,31 @@ def build_query_payload(
     medium = "voice" if device_id is not None else "text"
     return {
         "utterance": utterance,
-        "session_id": conversation_id,
+        "session_id": session_id,
         "source": medium,
         "medium": medium,
         "satellite_id": device_id,
         "satellite_area_id": area_id,
         "satellite_area_name": area_name,
     }
+
+
+# Router "done" intent_type values for a turn that ended by asking the user a
+# question (ha-intent-router pipeline/run.py clarification exits). The router
+# keeps these exchanges in session memory, so the next utterance is the answer.
+CLARIFICATION_INTENT_TYPES: frozenset[str] = frozenset({
+    "ambiguous",
+    "ambiguous_target",
+    "low_confidence",
+})
+
+
+def should_continue_conversation(intent_type, enabled: bool) -> bool:
+    """Whether the satellite should listen again without the wake word.
+
+    Only when the user opted in and the router's turn was a clarification.
+    """
+    return bool(enabled) and intent_type in CLARIFICATION_INTENT_TYPES
 
 
 def parse_response_text(data: dict) -> str:

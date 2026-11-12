@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests.conftest import IntentHandleError, IntentResponseErrorCode, MatchFailedError
-from custom_components.ha_intent_router_conversation.const import CONF_API_KEY, CONF_BASE_URL
+from custom_components.ha_intent_router_conversation.const import (
+    CONF_API_KEY,
+    CONF_BASE_URL,
+    CONF_CONTINUE_ON_CLARIFICATION,
+)
 from custom_components.ha_intent_router_conversation.conversation import (
     _map_error_code,
 )
@@ -77,9 +81,16 @@ class _StreamResponse:
 class _FakeSession:
     def __init__(self, events):
         self._events = events
+        self.posted_json = []
 
-    def post(self, *args, **kwargs):
+    def post(self, *args, json=None, **kwargs):
+        self.posted_json.append(json)
         return _StreamResponse(self._events)
+
+
+# HA assigns the ChatLog's id before the agent runs (a ULID on a fresh
+# conversation), even while ConversationInput.conversation_id is still None.
+CHAT_LOG_ID = "01JCHATLOGCONVERSATIONID00"
 
 
 class _FakeChatLog:
@@ -88,7 +99,8 @@ class _FakeChatLog:
     Like the real async_add_delta_content_stream, zero deltas add nothing.
     """
 
-    def __init__(self):
+    def __init__(self, conversation_id=None):
+        self.conversation_id = conversation_id or CHAT_LOG_ID
         self.streamed_deltas = []
         self.added = []
 
@@ -138,14 +150,21 @@ def _make_async_handle(result=None, raises=None, with_satellite_id=True):
     return async_handle, calls
 
 
-def _run(conv_mod, events, async_handle):
+def _run(conv_mod, events, async_handle, *, config=None, input_conversation_id=None,
+         session=None):
     entity = object.__new__(conv_mod.HAIntentRouterConversationEntity)
     entity.hass = MagicMock()
-    entity._config = {CONF_BASE_URL: "http://router.local:8000", CONF_API_KEY: "sekret"}
+    entity._config = {
+        CONF_BASE_URL: "http://router.local:8000",
+        CONF_API_KEY: "sekret",
+        **(config or {}),
+    }
+    session = session or _FakeSession(events)
 
     user_input = MagicMock()
     user_input.text = "set a timer for an hour and a half"
-    user_input.conversation_id = "conv-1"
+    # None by default, as HA before core PR #188909 passes on a first turn.
+    user_input.conversation_id = input_conversation_id
     user_input.device_id = "satellite-device-1"
     user_input.satellite_id = "assist_satellite.kitchen"
     user_input.language = "en"
@@ -157,7 +176,7 @@ def _run(conv_mod, events, async_handle):
         with patch.object(
             conv_mod.conversation, "async_handle_intents", new=AsyncMock(return_value=None)
         ), patch.object(
-            conv_mod, "async_get_clientsession", return_value=_FakeSession(events)
+            conv_mod, "async_get_clientsession", return_value=session
         ), patch.object(
             conv_mod.conversation, "AssistantContent", new=_AssistantContent
         ), patch.object(
@@ -198,7 +217,7 @@ def test_native_intent_executed_with_device_and_slots(conv_mod):
     assert call["conversation_agent_id"] == "agent-1"
 
     assert result.response is ha_response
-    assert result.conversation_id == "conv-1"
+    assert result.conversation_id == CHAT_LOG_ID
     assert result.continue_conversation is False
 
 
@@ -350,3 +369,137 @@ def test_stream_error_wins_over_native_intent(conv_mod):
     _run(conv_mod, events, async_handle)
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# session_id contract: the ChatLog's conversation_id, sent and returned
+# ---------------------------------------------------------------------------
+
+_CHAT_DONE = [
+    {"type": "token", "text": "Hi"},
+    {"type": "done", "response": "Hi", "error_code": None, "intent_type": "CHAT"},
+]
+
+
+@pytest.mark.parametrize("input_conversation_id", [None, CHAT_LOG_ID])
+def test_session_id_is_chat_log_conversation_id(conv_mod, input_conversation_id):
+    async_handle, _ = _make_async_handle()
+    session = _FakeSession(_CHAT_DONE)
+
+    result, _, _ = _run(
+        conv_mod, _CHAT_DONE, async_handle,
+        input_conversation_id=input_conversation_id, session=session,
+    )
+
+    assert [p["session_id"] for p in session.posted_json] == [CHAT_LOG_ID]
+    assert result.conversation_id == CHAT_LOG_ID
+
+
+def test_local_intent_result_returns_chat_log_conversation_id(conv_mod):
+    entity = object.__new__(conv_mod.HAIntentRouterConversationEntity)
+    entity.hass = MagicMock()
+    entity._config = {CONF_BASE_URL: "http://router.local:8000", CONF_API_KEY: "sekret"}
+    user_input = MagicMock()
+    user_input.conversation_id = None
+    local_response = MagicMock()
+
+    async def run():
+        with patch.object(
+            conv_mod.conversation, "async_handle_intents",
+            new=AsyncMock(return_value=local_response),
+        ):
+            return await entity._async_handle_message(user_input, _FakeChatLog())
+
+    result = asyncio.run(run())
+
+    assert result.response is local_response
+    assert result.conversation_id == CHAT_LOG_ID
+    assert result.continue_conversation is False
+
+
+def test_stream_error_result_returns_chat_log_conversation_id(conv_mod):
+    async_handle, _ = _make_async_handle()
+    events = [{"type": "error", "message": "boom", "code": None}]
+
+    result, _, _ = _run(conv_mod, events, async_handle)
+
+    assert result.conversation_id == CHAT_LOG_ID
+
+
+def test_native_intent_error_returns_chat_log_conversation_id(conv_mod):
+    async_handle, _ = _make_async_handle(raises=MatchFailedError())
+
+    with patch.object(conv_mod.intent, "IntentResponse") as response_cls:
+        response_cls.return_value.speech = {"plain": {"speech": "x"}}
+        result, _, _ = _run(conv_mod, [_NATIVE_DONE], async_handle)
+
+    assert result.conversation_id == CHAT_LOG_ID
+
+
+# ---------------------------------------------------------------------------
+# continue_conversation on a router clarification (opt-in)
+# ---------------------------------------------------------------------------
+
+def _clarification_done(intent_type, error_code=None):
+    return {
+        "type": "done",
+        "response": "Which light do you mean?",
+        "error_code": error_code,
+        "intent_type": intent_type,
+    }
+
+
+@pytest.mark.parametrize(
+    "done",
+    [
+        _clarification_done("ambiguous_target"),
+        _clarification_done("ambiguous"),
+        _clarification_done("low_confidence", error_code="no_intent_match"),
+    ],
+)
+def test_clarification_continues_conversation_when_enabled(conv_mod, done):
+    async_handle, _ = _make_async_handle()
+
+    result, _, _ = _run(
+        conv_mod, [done], async_handle, config={CONF_CONTINUE_ON_CLARIFICATION: True}
+    )
+
+    assert result.continue_conversation is True
+    assert result.conversation_id == CHAT_LOG_ID
+
+
+@pytest.mark.parametrize("config", [{}, {CONF_CONTINUE_ON_CLARIFICATION: False}])
+def test_clarification_does_not_continue_by_default(conv_mod, config):
+    async_handle, _ = _make_async_handle()
+
+    result, _, _ = _run(
+        conv_mod, [_clarification_done("ambiguous_target")], async_handle, config=config
+    )
+
+    assert result.continue_conversation is False
+
+
+def test_answered_turn_never_continues_even_when_enabled(conv_mod):
+    async_handle, _ = _make_async_handle()
+
+    result, _, _ = _run(
+        conv_mod, _CHAT_DONE, async_handle, config={CONF_CONTINUE_ON_CLARIFICATION: True}
+    )
+
+    assert result.continue_conversation is False
+
+
+def test_clarification_soft_error_still_reports_error(conv_mod):
+    async_handle, _ = _make_async_handle()
+    done = _clarification_done("low_confidence", error_code="no_intent_match")
+
+    with patch.object(conv_mod.intent, "IntentResponse") as response_cls:
+        result, _, _ = _run(
+            conv_mod, [done], async_handle, config={CONF_CONTINUE_ON_CLARIFICATION: True}
+        )
+
+    response_cls.return_value.async_set_error.assert_called_once_with(
+        IntentResponseErrorCode.NO_INTENT_MATCH, done["response"]
+    )
+    response_cls.return_value.async_set_speech.assert_not_called()
+    assert result.continue_conversation is True

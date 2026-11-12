@@ -12,7 +12,62 @@ and response generation instead of the built-in conversation agent.
 
 - Routes voice and text queries to ha-intent-router with full satellite area context
 - Passes HA device/area metadata so the router can apply per-room defaults
-- Preserves HA's multi-turn `conversation_id` as the router's `session_id` for pronoun memory
+- Sends HA's conversation id as the router's `session_id`, so follow-ups ("turn it off",
+  "and the kitchen?") resolve against the earlier turns — see [Session id contract](#session-id-contract)
+- Optionally keeps the satellite listening after the router asks a clarifying question
+
+## Session id contract
+
+The router keeps session memory and dialogue state per `session_id` and trusts the value
+it is sent. It has no device lookup of its own, so this integration has to send one
+stable, non-empty id for every turn of a conversation.
+
+**What is sent.** `session_id` is the `conversation_id` of the turn's `ChatLog`
+(`chat_log.conversation_id`), and the same id is returned as the
+`ConversationResult.conversation_id` on every path: router answers, local timer and media
+intents, native intents delegated by the router, and errors.
+`ConversationInput.conversation_id` is not used. In HA releases before
+[core #188909](https://github.com/home-assistant/core/pull/188909) (merged 2026-10-28) it
+is `None` on a conversation's first turn, which gave the router `session_id=""` and no
+memory of that turn. The `ChatLog` id is never empty, because HA creates the chat session
+(and assigns its id) before it calls the agent.
+
+**How long an id lives.** This was checked against HA core `dev` at
+[`596e597`](https://github.com/home-assistant/core/tree/596e597e5aeb2c2a26ef8f8f4f009b0d7b3800f2):
+
+- A voice satellite stores the id between wake-word runs. `AssistSatelliteEntity` keeps
+  `_conversation_id`. Each new pipeline run calls
+  `chat_session.async_get_chat_session(hass, self._conversation_id, ...)`, stores the
+  session's id back, and passes it to the pipeline as `conversation_id`
+  ([`assist_satellite/entity.py` L508–L531](https://github.com/home-assistant/core/blob/596e597e5aeb2c2a26ef8f8f4f009b0d7b3800f2/homeassistant/components/assist_satellite/entity.py#L508-L531)).
+- The session behind that id survives about **5 minutes of idle time**.
+  `CONVERSATION_TIMEOUT = timedelta(minutes=5)`
+  ([`helpers/chat_session.py` L32](https://github.com/home-assistant/core/blob/596e597e5aeb2c2a26ef8f8f4f009b0d7b3800f2/homeassistant/helpers/chat_session.py#L32)).
+  `SessionCleanup` drops a session that is not in use and whose `last_updated` is older
+  than that (L101–L112). `last_updated` is refreshed when every turn ends (L204).
+- Within that window, a known id returns the same session (L171–L172), so separate
+  wake-word runs share one `ChatLog` and one router `session_id`.
+- After the window, the expired ULID is replaced with a fresh `ulid_now()` (L174–L183). A
+  new router session starts. The satellite stores the new id, so the next turns share it.
+- `async_get_chat_log` keys the log on `session.conversation_id`
+  ([`conversation/chat_log.py` L72–L115](https://github.com/home-assistant/core/blob/596e597e5aeb2c2a26ef8f8f4f009b0d7b3800f2/homeassistant/components/conversation/chat_log.py#L72-L115)),
+  so `chat_log.conversation_id` is always that session's id.
+- A satellite announcement or `start_conversation` deliberately starts a new session
+  (L303–L308 of `assist_satellite/entity.py`). The next wake-word run continues from it.
+
+Text clients (the Assist dialog, the `conversation.process` action) keep a conversation
+only if they send back the `conversation_id` from the previous result. The same 5-minute
+window applies to them.
+
+### Listening for the answer to a clarification (optional)
+
+When the router can't tell what you meant, it asks ("Which light do you mean?"). Its
+stream ends with `intent_type` set to `ambiguous`, `ambiguous_target` or `low_confidence`.
+Turn on **Listen for the answer to a clarifying question** in the integration's options
+(**Settings → Devices & Services → HA Intent Router → Configure**). The result then sets
+`continue_conversation=True` for those turns, and the satellite listens again without the
+wake word. The option is off by default; every other turn returns
+`continue_conversation=False`.
 
 ## Requirements
 

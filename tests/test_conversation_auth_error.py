@@ -57,6 +57,7 @@ def _make_entity(conv_mod, session):
     user_input.agent_id = "agent-1"
 
     chat_log = MagicMock()
+    chat_log.conversation_id = "01JCHATLOGCONVERSATIONID00"
 
     async def run():
         with patch.object(
@@ -79,6 +80,12 @@ def test_auth_failure_gets_its_own_message_and_error_code(conv_mod, status):
     assert "credentials" in message
     assert "API key" in message
     assert "connection" not in message.lower()
+
+
+def test_auth_failure_returns_chat_log_conversation_id(conv_mod):
+    result = _make_entity(conv_mod, _FakeSession(401))
+
+    assert result.conversation_id == "01JCHATLOGCONVERSATIONID00"
 
 
 def test_other_client_errors_still_get_connectivity_message(conv_mod):

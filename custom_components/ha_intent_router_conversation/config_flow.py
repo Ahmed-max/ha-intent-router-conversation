@@ -7,9 +7,16 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_API_KEY, CONF_BASE_URL, DOMAIN
+from .const import (
+    CONF_API_KEY,
+    CONF_BASE_URL,
+    CONF_CONTINUE_ON_CLARIFICATION,
+    DEFAULT_CONTINUE_ON_CLARIFICATION,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +47,13 @@ class HAIntentRouterConversationConfigFlow(
     config_entries.ConfigFlow, domain=DOMAIN
 ):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> HAIntentRouterConversationOptionsFlow:
+        return HAIntentRouterConversationOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict | None = None
@@ -112,6 +126,29 @@ class HAIntentRouterConversationConfigFlow(
                 reconfigure_entry.data[CONF_API_KEY],
             ),
             errors=errors,
+        )
+
+
+class HAIntentRouterConversationOptionsFlow(config_entries.OptionsFlow):
+    """Behaviour options that don't need a connection re-check.
+
+    self.config_entry is provided by HA (2024.11+); it is not set here.
+    """
+
+    async def async_step_init(
+        self, user_input: dict | None = None
+    ) -> config_entries.FlowResult:
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self.config_entry.options.get(
+            CONF_CONTINUE_ON_CLARIFICATION, DEFAULT_CONTINUE_ON_CLARIFICATION
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {vol.Optional(CONF_CONTINUE_ON_CLARIFICATION, default=current): bool}
+            ),
         )
 
 
